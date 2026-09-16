@@ -2,8 +2,8 @@
 A symetrical map with a big central main hall, devided by a glass wall and multiple paths and combination of them to go from one side to the other.
 Suited for: DM, TDM, CA, FT, DOM, CTF
 
-<img src="https://github.com/The-Duke-96/Xonotic_Maps/blob/XonHall/Imgs/Mainhall.jpg" width="1200" height="900">
-<img src="https://github.com/The-Duke-96/Xonotic_Maps/blob/XonHall/Imgs/Sidehall_A.jpg" width="1200" height="900">
-<img src="https://github.com/The-Duke-96/Xonotic_Maps/blob/XonHall/Imgs/Sidehall_B.jpg" width="1200" height="900">
-<img src="https://github.com/The-Duke-96/Xonotic_Maps/blob/XonHall/Imgs/Underground.jpg" width="1200" height="900">
-<img src="https://github.com/The-Duke-96/Xonotic_Maps/blob/XonHall/Imgs/Roof.jpg" width="1200" height="900">
+<img src="https://github.com/The-Duke-96/Xonotic_Maps/blob/main/XonHall/Imgs/Mainhall.jpg" width="1200" height="900">
+<img src="https://github.com/The-Duke-96/Xonotic_Maps/blob/main/XonHall/Imgs/Sidehall_A.jpg" width="1200" height="900">
+<img src="https://github.com/The-Duke-96/Xonotic_Maps/blob/main/XonHall/Imgs/Sidehall_B.jpg" width="1200" height="900">
+<img src="https://github.com/The-Duke-96/Xonotic_Maps/blob/main/XonHall/Imgs/Underground.jpg" width="1200" height="900">
+<img src="https://github.com/The-Duke-96/Xonotic_Maps/blob/main/XonHall/Imgs/Roof.jpg" width="1200" height="900">
