@@ -166,12 +166,12 @@ MENU_COMMANDS = {"c", "h", "q", "s", "x"}
 
 # ASCII art banner for the title screen.
 ASCII_BANNER = r"""
- __  __                   _               _   _      _                 
-|  \/  | __ _ _ __  _ __ (_)_ __   __ _  | | | | ___| |_ __   ___ _ __ 
+ __  __                   _               _   _      _
+|  \/  | __ _ _ __  _ __ (_)_ __   __ _  | | | | ___| |_ __   ___ _ __
 | |\/| |/ _` | '_ \| '_ \| | '_ \ / _` | | |_| |/ _ \ | '_ \ / _ \ '__|
-| |  | | (_| | |_) | |_) | | | | | (_| | |  _  |  __/ | |_) |  __/ |   
-|_|  |_|\__,_| .__/| .__/|_|_| |_|\__, | |_| |_|\___|_| .__/ \___|_|   
-             |_|   |_|            |___/               |_|              
+| |  | | (_| | |_) | |_) | | | | | (_| | |  _  |  __/ | |_) |  __/ |
+|_|  |_|\__,_| .__/| .__/|_|_| |_|\__, | |_| |_|\___|_| .__/ \___|_|
+             |_|   |_|            |___/               |_|
 """
 
 
@@ -337,7 +337,7 @@ def pick_map_file(maps_dir):
     print("\nMultiple .map files found (newest first):")
     for i, path in enumerate(candidates, start=1):
         print(f"  {i}) {path.name}")
-    choice = ask(f"> Select file [1-{len(candidates)}] (Enter = 1, c = cancel): ").lower()
+    choice = ask("> Select file: ").lower()
     if choice in ("c", "x", "q"):
         print("[INFO] Cancelled.")
         return None
@@ -691,7 +691,7 @@ def change_revision(project_dir):
     print(f"\n[INFO] Current name: {current_base}  "
           f"(base: '{core}', revision: '{old_rev or 'none'}')")
 
-    tag = prompt_revision_tag("> Enter new revision tag (e.g. 3): ", prefix)
+    tag = prompt_revision_tag("> Enter new revision tag: ", prefix)
     if tag is None:
         print("[INFO] Revision change cancelled.")
         return
@@ -867,19 +867,19 @@ def choose_pk3_revision(export_dir, pk3_prefix, base, rev_prefix):
         print(f"[INFO] Current revision: {fmt(current)}  (found: {existing[current]})")
         print(f"  1) Increase by 1  ->  {fmt(current + 1)}")
         print("  2) Enter my own")
-        choice = ask("> Select [1-2] (Enter = 1, c = cancel): ").lower()
+        choice = ask("> Select option: ").lower()
         if choice in ("c", "x", "q"):
             return None
         if choice in ("", "1"):
             tag = str(current + 1)
         elif choice == "2":
-            tag = prompt_revision_tag("> Enter revision tag (c = cancel): ", rev_prefix)
+            tag = prompt_revision_tag("> Enter revision tag: ", rev_prefix)
         else:
             print("[ERROR] Invalid selection.")
             return None
     else:
         print("[INFO] No existing revision found.")
-        tag = prompt_revision_tag("> Enter revision tag (Enter = 1, c = cancel): ",
+        tag = prompt_revision_tag("> Enter revision tag: ",
                                   rev_prefix, default="1")
 
     if tag is None:
@@ -1216,7 +1216,7 @@ def create_project():
         print("\n--- Create new map folder ---")
         print(f" - It will be created in: {workspace}")
         print(" - Allowed characters: letters, digits, '_' and '-'.")
-        name = ask("> Enter new map folder name (c = cancel, s = settings, h = help, q = quit): ")
+        name = ask("> Enter new map folder name: ")
         lower = name.lower()
 
         # Menu commands are handled here and are never used as a folder name.
@@ -1277,7 +1277,7 @@ def choose_project():
         else:
             print(f"\n[INFO] No map folders found yet in '{workspace}'.")
 
-        entry = ask("\n> Enter map directory name or number (c = back): ")
+        entry = ask("\n> Enter map directory name or number: ")
         lower = entry.lower()
 
         if lower == "q":
