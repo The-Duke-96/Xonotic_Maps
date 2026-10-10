@@ -15,6 +15,8 @@ the boring parts of a map project:
   3) Clean Backups    - remove leftover editor backups (.bak / .autosave).
   4) Pack it          - build a ready-to-distribute .pk3 (the .map source can be
                         included so other people can open the map in NetRadiant).
+                        The .pk3 name can get a revision number; the map files
+                        inside keep their names.
 
 START MENU
 ----------
@@ -599,6 +601,30 @@ def split_revision(stem, rev_prefix):
     return stem, ""
 
 
+def prompt_revision_tag(prompt, rev_prefix, default=None):
+    """Ask for a revision tag and return it cleaned (lowercase), or None.
+
+    None means "cancelled or invalid" (an error message was already printed
+    for invalid input). An empty answer uses 'default' if one is given.
+    With the prefix 'r', both '3' and 'r3' are accepted and give '3'.
+    """
+    tag = ask(prompt).lower().lstrip("_")
+    if tag == "" and default is not None:
+        return default
+    if tag in ("c", "x", "q", ""):
+        return None
+    if tag in ("h", "s"):
+        print(f"[ERROR] '{tag}' is a menu command, not a revision tag. Nothing was changed.")
+        return None
+    # Allow typing the prefix too: with prefix 'r', both '3' and 'r3' work.
+    if rev_prefix and tag.startswith(rev_prefix.lower()) and tag[len(rev_prefix):][:1].isdigit():
+        tag = tag[len(rev_prefix):]
+    if not re.fullmatch(r"[a-z0-9]+", tag):
+        print("[ERROR] The tag may only contain letters and digits.")
+        return None
+    return tag
+
+
 def starts_with_base(name, base):
     """True if 'name' belongs to the map called 'base'.
 
@@ -665,19 +691,9 @@ def change_revision(project_dir):
     print(f"\n[INFO] Current name: {current_base}  "
           f"(base: '{core}', revision: '{old_rev or 'none'}')")
 
-    tag = ask("> Enter new revision tag (e.g. 3): ").lower().lstrip("_")
-    if tag in ("c", "x", "q", ""):
+    tag = prompt_revision_tag("> Enter new revision tag (e.g. 3): ", prefix)
+    if tag is None:
         print("[INFO] Revision change cancelled.")
-        return
-    if tag in ("h", "s"):
-        print(f"[ERROR] '{tag}' is a menu command, not a revision tag. Nothing was changed.")
-        return
-
-    # Allow typing the prefix too: with prefix 'r', both '3' and 'r3' work.
-    if prefix and tag.startswith(prefix.lower()) and tag[len(prefix):][:1].isdigit():
-        tag = tag[len(prefix):]
-    if not re.fullmatch(r"[a-z0-9]+", tag):
-        print("[ERROR] The tag may only contain letters and digits.")
         return
 
     new_rev = f"_{prefix}{tag}"
@@ -801,6 +817,76 @@ def should_pack(rel_path, include_map_source):
     return True
 
 
+def find_existing_pk3_revisions(export_dir, pk3_prefix, core, rev_prefix):
+    """Find already packed revisions of this map in the export folder.
+
+    Looks for files named '<pk3_prefix><core>_<rev_prefix><number>.pk3' and
+    returns {number: file_name}. Only plain numbers are recognized, because
+    only those can be increased automatically.
+    """
+    pattern = re.compile(
+        rf"^{re.escape(pk3_prefix + core)}_{re.escape(rev_prefix)}(\d+)\.pk3$",
+        re.IGNORECASE,
+    )
+    found = {}
+    if export_dir.is_dir():
+        for path in export_dir.glob("*.pk3"):
+            match = pattern.match(path.name)
+            if match:
+                found[int(match.group(1))] = path.name
+    return found
+
+
+def choose_pk3_revision(export_dir, pk3_prefix, base, rev_prefix):
+    """Ask whether the PK3 name should carry a revision and which one.
+
+    The map files inside the package keep their names; only the .pk3 file
+    name is versioned. Returns (name_part, revision_suffix), where the suffix
+    is '' for "no revision", or None if the user cancelled.
+    """
+    if not confirm("\n> Add a revision number to the PK3 file name?"):
+        return base, ""
+
+    # If the map files themselves carry a revision ('mymap_r2'), the PK3 name
+    # is built from the plain name, otherwise we would get 'mymap_r2_r3'.
+    core, name_rev = split_revision(base, rev_prefix)
+
+    existing = find_existing_pk3_revisions(export_dir, pk3_prefix, core, rev_prefix)
+    if name_rev:
+        print(f"[INFO] The map files are named '{base}' (revision '{name_rev}'). "
+              f"The files inside stay unchanged; the PK3 name uses '{core}'.")
+        digits = re.search(r"\d+", name_rev)
+        if digits:
+            existing.setdefault(int(digits.group()), f"map file name '{base}'")
+
+    def fmt(number):
+        return f"_{rev_prefix}{number}"
+
+    if existing:
+        current = max(existing)
+        print(f"[INFO] Current revision: {fmt(current)}  (found: {existing[current]})")
+        print(f"  1) Increase by 1  ->  {fmt(current + 1)}")
+        print("  2) Enter my own")
+        choice = ask("> Select [1-2] (Enter = 1, c = cancel): ").lower()
+        if choice in ("c", "x", "q"):
+            return None
+        if choice in ("", "1"):
+            tag = str(current + 1)
+        elif choice == "2":
+            tag = prompt_revision_tag("> Enter revision tag (c = cancel): ", rev_prefix)
+        else:
+            print("[ERROR] Invalid selection.")
+            return None
+    else:
+        print("[INFO] No existing revision found.")
+        tag = prompt_revision_tag("> Enter revision tag (Enter = 1, c = cancel): ",
+                                  rev_prefix, default="1")
+
+    if tag is None:
+        return None
+    return core, fmt(tag)
+
+
 def pack_map(project_dir, project_name):
     """Zip the project folder into a distributable .pk3."""
     maps_dir = project_dir / "maps"
@@ -824,13 +910,26 @@ def pack_map(project_dir, project_name):
             print("[INFO] Packing cancelled.")
             return
 
-    # Build the output path from prefix + name, in the configured folder.
+    # Work out the target folder and file name: prefix + name (+ revision).
     prefix = config.get("pk3_prefix", "")
-    output_name = f"{prefix}{map_name_base}.pk3"
+    rev_prefix = clean_rev_prefix(config.get("rev_prefix", ""))
     custom_dir = config.get("custom_export_dir")
     export_dir = Path(custom_dir) if custom_dir else project_dir
+
+    selection = choose_pk3_revision(export_dir, prefix, map_name_base, rev_prefix)
+    if selection is None:
+        print("[INFO] Packing cancelled.")
+        return
+    pk3_base, revision = selection
+    output_name = f"{prefix}{pk3_base}{revision}.pk3"
+
     export_dir.mkdir(parents=True, exist_ok=True)
     output_path = export_dir / output_name
+
+    # Never replace an existing package without asking.
+    if output_path.exists() and not confirm(f"\n> '{output_name}' already exists. Overwrite?"):
+        print("[INFO] Packing cancelled. Nothing was changed.")
+        return
 
     print(f"\n[INFO] Packaging contents of '{project_name}'...")
     print(f"[INFO] Target archive: {output_path}")
@@ -1038,7 +1137,10 @@ def show_help():
     print("4) Pack it:")
     print(f"   Builds a .pk3 from the project (prefix: {prefix_str}). Compiler leftovers,")
     print("   backups and working files (.prt, .srf, .xcf, ...) are left out. The")
-    print("   maps/*.map source is included unless disabled in the settings.\n")
+    print("   maps/*.map source is included unless disabled in the settings.")
+    print("   You are asked whether the .pk3 name should get a revision number. If")
+    print("   one exists already, you can raise it by 1 or enter your own. The map")
+    print("   files inside the package keep their names.\n")
     print("Global Commands:")
     print("   h = help | s = settings | c = cancel / back | q = quit")
     print("=" * 75)
