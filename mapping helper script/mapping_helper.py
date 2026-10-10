@@ -1095,6 +1095,9 @@ def settings_menu():
                 save_config(config)
                 print(f"[SUCCESS] Projects folder saved: {new_path}")
 
+        elif choice == "h":
+            show_help()
+
         elif choice in ("c", "q", ""):
             break
         else:
