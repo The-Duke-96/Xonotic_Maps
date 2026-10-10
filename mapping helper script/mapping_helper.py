@@ -157,6 +157,11 @@ NEW_PROJECT_SUBDIRS = [
     "gfx",        # misc graphics, e.g. a loading screen
 ]
 
+# Single-letter menu commands (help, settings, cancel, quit, and the legacy 'x').
+# They must never be accepted as a folder name or a revision tag, otherwise
+# pressing 's' at a name prompt would create a folder called 's'.
+MENU_COMMANDS = {"c", "h", "q", "s", "x"}
+
 # ASCII art banner for the title screen.
 ASCII_BANNER = r"""
   __  __                  _               _   _         _
@@ -664,6 +669,9 @@ def change_revision(project_dir):
     if tag in ("c", "x", "q", ""):
         print("[INFO] Revision change cancelled.")
         return
+    if tag in ("h", "s"):
+        print(f"[ERROR] '{tag}' is a menu command, not a revision tag. Nothing was changed.")
+        return
 
     # Allow typing the prefix too: with prefix 'r', both '3' and 'r3' work.
     if prefix and tag.startswith(prefix.lower()) and tag[len(prefix):][:1].isdigit():
@@ -833,7 +841,10 @@ def pack_map(project_dir, project_name):
     temp_path = export_dir / (output_name + ".tmp")
     packed = 0
     try:
-        with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED) as pk3:
+        # Deflate is the only compression method Xonotic can read, so we keep it
+        # but use the maximum level (9) for the smallest possible file. Packing
+        # takes slightly longer, which does not matter for a one-off release build.
+        with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as pk3:
             for file_path in sorted(project_dir.rglob("*")):
                 if not file_path.is_file():
                     continue
@@ -1075,6 +1086,8 @@ def validate_project_name(name):
     names, console commands and map lists, where spaces and special characters
     cause trouble.
     """
+    if name.lower() in MENU_COMMANDS:
+        return f"'{name}' is reserved for menu commands (h, s, c, q, x)."
     if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
         return "Use only letters, digits, '_' and '-' (no spaces or other characters)."
     if name in IGNORE_DIRS:
@@ -1088,19 +1101,37 @@ def create_project():
     Returns the new project's folder name (so the caller can open it right
     away), or None if nothing was created.
     """
-    workspace = get_workspace_dir()
-    if not workspace.is_dir():
-        print(f"[ERROR] Projects folder '{workspace}' does not exist!")
-        print("        Change it in the settings (press 's').")
-        return None
+    # Loop so that help/settings can be used from this prompt and we come back
+    # here afterwards. The projects folder is re-read each time because the
+    # settings may have changed it.
+    while True:
+        workspace = get_workspace_dir()
+        if not workspace.is_dir():
+            print(f"[ERROR] Projects folder '{workspace}' does not exist!")
+            print("        Change it in the settings (press 's').")
+            return None
 
-    print("\n--- Create new map folder ---")
-    print(f" - It will be created in: {workspace}")
-    print(" - Allowed characters: letters, digits, '_' and '-'.")
-    name = ask("> Enter new map folder name (c = cancel): ")
-    if name.lower() in ("c", "x", "q", ""):
-        print("[INFO] Cancelled.")
-        return None
+        print("\n--- Create new map folder ---")
+        print(f" - It will be created in: {workspace}")
+        print(" - Allowed characters: letters, digits, '_' and '-'.")
+        name = ask("> Enter new map folder name (c = cancel, s = settings, h = help, q = quit): ")
+        lower = name.lower()
+
+        # Menu commands are handled here and are never used as a folder name.
+        if lower == "q":
+            print("\nGoodbye!")
+            sys.exit(0)
+        elif lower == "h":
+            show_help()
+        elif lower == "s":
+            settings_menu()
+        elif lower in ("c", "x"):
+            print("[INFO] Cancelled.")
+            return None
+        elif lower == "":
+            continue
+        else:
+            break
 
     error = validate_project_name(name)
     if error:
