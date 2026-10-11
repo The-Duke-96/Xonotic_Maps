@@ -9,7 +9,8 @@ the boring parts of a map project:
   1) Export Textures  - scan your .map file (classic and brush-primitive format,
                         brush faces + patches) and your own
                         shader scripts, then copy every texture that is found in
-                        the Xonotic "mapping support" PK3s into your project.
+                        the Xonotic "mapping support" PK3s - and, by default, in
+                        your own PK3s in the data folder - into your project.
   2) Change Revision  - rename the map files, the lightmap folder and update the
                         title in the .mapinfo, with a preview + confirmation.
   3) Clean Backups    - remove leftover editor backups (.bak / .autosave).
@@ -57,6 +58,8 @@ CONFIGURATION FILE
     * Include .map source   - ship the editable .map inside the .pk3 (default: yes)
     * Projects folder       - where map folders are listed and created
                               (default: the folder this script lives in)
+    * Search all PK3s       - also search your own PK3s in the data folder,
+                              support PK3s first (default: yes)
 """
 
 from __future__ import annotations
@@ -97,6 +100,7 @@ DEFAULT_CONFIG = {
     "xonotic_data_dir": None,     # None = auto-detect (see get_xonotic_data_dir)
     "include_map_source": True,   # ship maps/*.map inside the .pk3
     "projects_dir": None,         # None = the folder this script lives in
+    "search_all_pk3s": True,      # also search your own PK3s in the data folder
 }
 
 # Places where Xonotic keeps the user's data folder. The first existing one wins.
@@ -273,21 +277,29 @@ def get_status_note(project_dir=None):
 # GENERAL HELPERS
 # ---------------------------------------------------------------------------
 def get_support_pk3_files():
-    """Find the support PK3s in the Xonotic data folder.
+    """Find the PK3s that textures are exported from (Xonotic data folder).
 
-    A file counts as 'support' if its name contains 'mapping' or 'extra'
-    (e.g. xonotic-*-mapping.pk3, xonotic-*-extra.pk3). Sorted by name so the
-    result - and therefore the search priority - is stable between runs.
+    'Support' PK3s are files whose name contains 'mapping' or 'extra'
+    (e.g. xonotic-*-mapping.pk3, xonotic-*-extra.pk3). They always come first.
+    If the setting 'Search all PK3s' is on (default), every other *.pk3 in the
+    data folder is searched too, e.g. your own texture packs. They come AFTER
+    the support PK3s, so the first archive containing a file still wins and
+    the original game assets keep priority. Each group is sorted by name so
+    the search order is stable between runs.
     """
     data_dir = get_xonotic_data_dir()
     if not data_dir.is_dir():
         return []
-    result = []
+    support, others = [], []
     for pk3_path in sorted(data_dir.glob("*.pk3")):
         name = pk3_path.name.lower()
         if "mapping" in name or "extra" in name:
-            result.append(pk3_path)
-    return result
+            support.append(pk3_path)
+        else:
+            others.append(pk3_path)
+    if load_config().get("search_all_pk3s", True):
+        return support + others
+    return support
 
 
 def build_pk3_index(pk3_paths):
@@ -429,48 +441,94 @@ def extract_used_textures(map_file_path):
     return result
 
 
-def parse_shader_file(shader_path):
-    """Read a .shader script and return (defined_shader_names, referenced_images).
+def parse_shader_text(text):
+    """Parse the text of a .shader script into {shader_name: {image, ...}}.
 
-    defined_shader_names - names declared at brace depth 0, e.g.
-                           'textures/mymap/lamp'. Brush faces using these names
-                           are custom shaders, not plain image files.
-    referenced_images    - image paths used inside the shaders by 'map',
-                           'clampmap', 'animmap' and 'skyparms' (skybox faces
-                           are expanded to the six _rt/_lf/... images).
+    Shader names are the names declared at brace depth 0, e.g.
+    'textures/mymap/lamp'. The images of a shader are the paths used inside
+    its braces by 'map', 'clampmap', 'animmap' and 'skyparms' (skybox faces
+    are expanded to the six _rt/_lf/... images). Image references that appear
+    before any shader name are stored under the key ''.
     """
-    defined, referenced = set(), set()
+    blocks = {}
+    current = None
     depth = 0
 
+    for raw in text.splitlines():
+        line = raw.split("//", 1)[0].strip()          # drop comments
+        if not line:
+            continue
+        tokens = line.split()
+
+        if depth == 0:
+            # Outside any braces a line is the name of a new shader.
+            if tokens[0] not in ("{", "}"):
+                current = strip_image_extension(tokens[0].lower().replace("\\", "/"))
+                blocks.setdefault(current, set())
+        else:
+            images = blocks.setdefault(current if current is not None else "", set())
+            key = tokens[0].lower()
+            if key in ("map", "clampmap") and len(tokens) > 1:
+                if not tokens[1].startswith("$"):      # skip $lightmap etc.
+                    images.add(strip_image_extension(tokens[1].lower()))
+            elif key == "animmap":
+                # Syntax: animmap <fps> <image1> <image2> ...
+                for token in tokens[2:]:
+                    images.add(strip_image_extension(token.lower()))
+            elif key == "skyparms" and len(tokens) > 1 and tokens[1] != "-":
+                base = tokens[1].lower()
+                for suffix in SKY_FACE_SUFFIXES:
+                    images.add(base + suffix)
+
+        # Track brace depth AFTER handling the line itself.
+        depth = max(0, depth + line.count("{") - line.count("}"))
+
+    return blocks
+
+
+def read_shader_blocks(shader_path):
+    """Read a .shader file from disk and parse it (see parse_shader_text)."""
     with open(shader_path, "r", encoding="utf-8", errors="ignore") as f:
-        for raw in f:
-            line = raw.split("//", 1)[0].strip()      # drop comments
-            if not line:
+        return parse_shader_text(f.read())
+
+
+def find_pk3_shaders(index, wanted):
+    """Find shaders inside the PK3s that define the wanted texture names.
+
+    Many textures (sprites with alpha, animated or sky textures, ...) only work
+    through a shader in 'scripts/*.shader'. This searches those scripts in the
+    indexed PK3s (same priority as the images: the first archive/file that
+    defines a name wins) and returns
+        {texture_name: (pk3_path, shader_path_in_archive, images_of_that_shader)}
+    Only scripts that mention at least one wanted name are parsed.
+    """
+    found = {}
+    if not wanted:
+        return found
+    archives = {}
+    try:
+        for key, (pk3_path, real_name) in index.items():
+            if not (key.startswith("scripts/") and key.endswith(".shader")):
                 continue
-            tokens = line.split()
-
-            if depth == 0:
-                # Outside any braces a line is the name of a new shader.
-                if tokens[0] not in ("{", "}"):
-                    defined.add(strip_image_extension(tokens[0].lower().replace("\\", "/")))
-            else:
-                key = tokens[0].lower()
-                if key in ("map", "clampmap") and len(tokens) > 1:
-                    if not tokens[1].startswith("$"):      # skip $lightmap etc.
-                        referenced.add(strip_image_extension(tokens[1].lower()))
-                elif key == "animmap":
-                    # Syntax: animmap <fps> <image1> <image2> ...
-                    for token in tokens[2:]:
-                        referenced.add(strip_image_extension(token.lower()))
-                elif key == "skyparms" and len(tokens) > 1 and tokens[1] != "-":
-                    base = tokens[1].lower()
-                    for suffix in SKY_FACE_SUFFIXES:
-                        referenced.add(base + suffix)
-
-            # Track brace depth AFTER handling the line itself.
-            depth = max(0, depth + line.count("{") - line.count("}"))
-
-    return defined, referenced
+            open_wanted = wanted - set(found)
+            if not open_wanted:
+                break
+            try:
+                if pk3_path not in archives:
+                    archives[pk3_path] = zipfile.ZipFile(pk3_path, "r")
+                text = archives[pk3_path].read(real_name).decode("utf-8", errors="ignore")
+            except (KeyError, OSError, zipfile.BadZipFile):
+                continue
+            lowered = text.lower()
+            if not any(name in lowered for name in open_wanted):
+                continue
+            for name, images in parse_shader_text(text).items():
+                if name in open_wanted:
+                    found[name] = (pk3_path, real_name, images)
+    finally:
+        for archive in archives.values():
+            archive.close()
+    return found
 
 
 def export_textures(project_dir):
@@ -494,42 +552,86 @@ def export_textures(project_dir):
     print(f"[SUCCESS] Found {len(brush_textures)} unique textures in the .map file.")
 
     # 2) Which of those are custom shaders of this project, and what do those
-    #    shaders reference themselves?
-    defined_shaders, shader_images = set(), set()
+    #    shaders reference themselves? Only the shaders the map really uses
+    #    count, so unused shaders in a big script do not pull in extra images.
+    own_shaders = {}                 # shader name -> images (project scripts/)
     scripts_dir = project_dir / "scripts"
     if scripts_dir.is_dir():
         for shader_file in sorted(scripts_dir.glob("*.shader")):
-            defined, referenced = parse_shader_file(shader_file)
-            defined_shaders |= defined
-            shader_images |= referenced
+            blocks = read_shader_blocks(shader_file)
+            defined = {n for n in blocks if n}
+            referenced = set().union(*blocks.values()) if blocks else set()
+            for name in defined:
+                own_shaders.setdefault(name, set()).update(blocks[name])
             print(f"[INFO] Parsed shader script: {shader_file.name} "
                   f"({len(defined)} shaders, {len(referenced)} image references)")
 
-    custom = {t for t in brush_textures if t in defined_shaders}
+    custom = {t for t in brush_textures if t in own_shaders}
+    shader_images = set()
+    for name in custom:
+        shader_images |= own_shaders[name]
     if custom:
         print(f"[INFO] {len(custom)} texture name(s) are your own shaders "
               f"(images are taken from the shader files instead).")
 
-    # Everything we should try to find as an image file.
-    needed = (brush_textures - custom) | shader_images
+    # Textures that still need an image file or a shader from a PK3.
+    remaining = brush_textures - custom
 
-    # 3) Where can we get images from?
+    # 3) Where can we get images and shaders from?
     support_pk3s = get_support_pk3_files()
     if not support_pk3s:
-        print(f"[ERROR] No support PK3s found in '{get_xonotic_data_dir()}'!")
+        print(f"[ERROR] No PK3s found in '{get_xonotic_data_dir()}'!")
         print("        Set the correct folder in the settings menu (press 's').")
         return
-    print(f"[INFO] Scanning {len(support_pk3s)} support archive(s): "
-          f"{[p.name for p in support_pk3s]}")
+    if len(support_pk3s) <= 10:
+        print(f"[INFO] Scanning {len(support_pk3s)} archive(s): "
+              f"{[p.name for p in support_pk3s]}")
+    else:
+        print(f"[INFO] Scanning {len(support_pk3s)} archives in "
+              f"'{get_xonotic_data_dir()}' (this can take a moment)...")
     index = build_pk3_index(support_pk3s)
+
+    # 3b) Textures that are shaders defined inside a PK3: the shader script is
+    #     copied into scripts/ and the images that shader uses are exported.
+    provided = find_pk3_shaders(index, remaining)
+    shader_files = {}                # (pk3_path, script path) -> [shader names]
+    for name, (pk3_path, real_name, images) in sorted(provided.items()):
+        shader_files.setdefault((pk3_path, real_name), []).append(name)
+        shader_images |= images
+    if provided:
+        print(f"[INFO] {len(provided)} texture name(s) are defined by shaders in PK3s "
+              f"({len(shader_files)} shader script(s) will be copied to scripts/).")
+
+    # Everything we should try to find as an image file.
+    needed = (remaining - set(provided)) | shader_images
 
     # 4) Copy everything we can find.
     project_root = project_dir.resolve()
     copied = skipped = 0
+    shaders_copied = 0
     missing = []
     open_archives = {}      # keep each PK3 open while copying, close at the end
 
     try:
+        # Shader scripts first (never overwritten, never outside the project).
+        for (pk3_path, real_name), names in sorted(shader_files.items(), key=lambda kv: kv[0][1]):
+            target = project_dir / real_name
+            if project_root not in target.resolve().parents:
+                continue
+            if target.exists():
+                print(f"  [!] Shader script already exists, not overwritten: {real_name}")
+                print(f"      It does not define: {', '.join(names)}")
+                continue
+            if pk3_path not in open_archives:
+                open_archives[pk3_path] = zipfile.ZipFile(pk3_path, "r")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open_archives[pk3_path].open(real_name) as src, \
+                    open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            print(f"  [+] Copied shader ({pk3_path.name}): {real_name}  "
+                  f"(defines: {', '.join(names)})")
+            shaders_copied += 1
+
         for image_base in sorted(needed):
             found = False
             # Try the plain texture plus every companion map, in every format.
@@ -567,15 +669,17 @@ def export_textures(project_dir):
 
     # 5) Report.
     if missing:
-        print("\n[INFO] No matching image found in the support PK3s for:")
+        print("\n[INFO] No matching image found in the searched PK3s for:")
         for name in missing:
             print(f"  [?] {name}")
         print("      These are usually shipped with the base game or defined by a")
         print("      shader (check any that you expected to be exported).")
 
-    print(f"\n[DONE] Copied {copied} file(s), skipped {skipped} that already exist.")
-    print("[NOTE] Shader scripts from the support PKs are not copied - if a")
-    print("       texture relies on one, add that .shader file to your scripts/ folder.")
+    print(f"\n[DONE] Copied {copied} file(s) and {shaders_copied} shader script(s), "
+          f"skipped {skipped} that already exist.")
+    print("[NOTE] Shader scripts are copied as a whole file, so they may also contain")
+    print("       shaders you do not use. Only images of the shaders your map uses")
+    print("       are exported.")
 
 
 # ---------------------------------------------------------------------------
@@ -988,6 +1092,7 @@ def settings_menu():
         print(f"4) Xonotic Data Folder:  {data_dir or f'[Auto-detect: {get_xonotic_data_dir()}]'}")
         print(f"5) Include .map in PK3:  {'yes' if config.get('include_map_source') else 'no'}")
         print(f"6) Projects Folder:      {config.get('projects_dir') or f'[Default: {BASE_MAPS_DIR}]'}")
+        print(f"7) Search all PK3s:      {'yes' if config.get('search_all_pk3s', True) else 'no (support PKs only)'}")
         print("-" * 75)
 
         choice = ask("\n> Select option: ").lower()
@@ -1095,6 +1200,16 @@ def settings_menu():
                 save_config(config)
                 print(f"[SUCCESS] Projects folder saved: {new_path}")
 
+        elif choice == "7":
+            # Simple toggle.
+            config["search_all_pk3s"] = not config.get("search_all_pk3s", True)
+            save_config(config)
+            if config["search_all_pk3s"]:
+                print("[SUCCESS] Textures are searched in ALL PK3s of the data folder "
+                      "(support PKs first).")
+            else:
+                print("[SUCCESS] Textures are searched in the support PKs only.")
+
         elif choice == "h":
             show_help()
 
@@ -1130,8 +1245,11 @@ def show_help():
     print("1) Export Textures:")
     print("   Scans the .map (brush faces + patches) and your scripts/*.shader files")
     print("   and copies the matching textures - including _glow, _norm, _gloss, ...")
-    print("   companions and skybox faces - from the support PKs in your Xonotic")
-    print("   data folder into the project. Existing files are never overwritten.\n")
+    print("   companions and skybox faces - from the PK3s in your Xonotic data folder")
+    print("   (support PKs first, then your own PK3s; see settings, option 7)")
+    print("   into the project. If a texture is defined by a shader in one of those")
+    print("   PK3s (scripts/*.shader), that script is copied to scripts/ too, plus the")
+    print("   images it uses. Existing files are never overwritten.\n")
     print("2) Change Revision:")
     print("   Renames the map files and the lightmap folder in maps/ and updates the")
     print(f"   .mapinfo title (format: {rev_str}). Shows a preview first.\n")
