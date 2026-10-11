@@ -1,6 +1,6 @@
 # Xonotic Mapping Helper
 
-A small terminal tool for Xonotic mappers that handles the repetitive housekeeping of a map project. Single Python file, no dependencies.
+A small terminal tool for Xonotic mappers that handles the repetitive housekeeping of a map project. Single Python file, no dependencies, alternativly a makefile with same functionality.
 
 What it does:
 Export Textures – copies the textures used by your .map and your own shaders from the Xonotic mapping support packages into your project (including _glow, _norm, _gloss, ... and skybox images).
@@ -13,6 +13,10 @@ Usage:
 Requires Python 3.8+. Put mapping_helper.py next to your map project folders and run:  
 ```
 python3 mapping_helper.py
+```
+Alternativly put the makefile next to your map project folders and run:
+```
+make
 ```
 
 Notes
